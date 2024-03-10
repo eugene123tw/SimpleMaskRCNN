@@ -66,6 +66,9 @@ def main():
     path_to_train_data = args.data_root
     num_epochs = args.epochs
     device = args.device
+    if device == "xpu":
+        import intel_extension_for_pytorch as ipex
+
     print_freq = args.print_freq
     image_size = tuple(args.image_size)
     batch_size = args.batch_size
