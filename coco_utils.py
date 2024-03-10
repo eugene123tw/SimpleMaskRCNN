@@ -6,7 +6,9 @@ import torchvision
 import transforms as T
 from pycocotools import mask as coco_mask
 from pycocotools.coco import COCO
-
+from datumaro.components.annotation import Annotation, Bbox, Polygon
+from datumaro.components.dataset import Dataset as DmDataset
+from random import sample
 
 def convert_coco_poly_to_mask(segmentations, height, width):
     masks = []
@@ -78,6 +80,71 @@ class ConvertCocoPolysToMask:
         target["iscrowd"] = iscrowd
 
         return image, target
+
+
+def pre_filtering(dataset: DmDataset, data_format: str, unannotated_items_ratio: float) -> DmDataset:
+    """Pre-filtering function to filter the dataset based on certain criteria.
+
+    Args:
+        dataset (DmDataset): The input dataset to be filtered.
+        data_format (str): The format of the dataset.
+        unannotated_items_ratio (float): The ratio of background unannotated items to be used.
+            This must be a float between 0 and 1.
+
+    Returns:
+        DmDataset: The filtered dataset.
+    """
+    used_background_items = set()
+    if unannotated_items_ratio > 0:
+        empty_items = [item.id for item in dataset if item.subset == "train" and len(item.annotations) == 0]
+        used_background_items = set(sample(empty_items, int(len(empty_items) * unannotated_items_ratio)))
+
+    dataset = DmDataset.filter(
+        dataset,
+        lambda item: not (
+            item.subset == "train" and len(item.annotations) == 0 and item.id not in used_background_items
+        ),
+    )
+    dataset = DmDataset.filter(dataset, is_valid_annot, filter_annotations=True)
+
+    return remove_unused_labels(dataset, data_format)
+
+
+def is_valid_annot(item, annotation: Annotation) -> bool:  # noqa: ARG001
+    """Return whether DatasetItem's annotation is valid."""
+    if isinstance(annotation, Bbox):
+        x1, y1, x2, y2 = annotation.points
+        if x1 < x2 and y1 < y2:
+            return True
+        msg = "There are bounding box which is not `x1 < x2 and y1 < y2`, they will be filtered out before training."
+        return False
+    if isinstance(annotation, Polygon):
+        # TODO(JaegukHyun): This process is computationally intensive.  # noqa: TD003
+        # We should make pre-filtering user-configurable.
+        x_points = [annotation.points[i] for i in range(0, len(annotation.points), 2)]
+        y_points = [annotation.points[i + 1] for i in range(0, len(annotation.points), 2)]
+        if min(x_points) < max(x_points) and min(y_points) < max(y_points) and annotation.get_area() > 0:
+            return True
+        msg = "There are invalid polygon, they will be filtered out before training."
+        return False
+    return True
+
+
+def remove_unused_labels(dataset: DmDataset, data_format: str) -> DmDataset:
+    """Remove unused labels in Datumaro dataset."""
+    original_categories: list[str] = dataset.get_label_cat_names()
+    used_labels: list[int] = list({ann.label for item in dataset for ann in item.annotations})
+    if data_format == "ava":
+        used_labels = [0, *used_labels]
+    elif data_format == "common_semantic_segmentation_with_subset_dirs":
+        if 0 in used_labels:
+            used_labels = [label - 1 for label in used_labels[1:]]
+        else:
+            used_labels = [label - 1 for label in used_labels]
+    if len(used_labels) == len(original_categories):
+        return dataset
+    mapping = {original_categories[idx]: original_categories[idx] for idx in used_labels}
+    return dataset.transform("remap_labels", mapping=mapping, default="delete")
 
 
 def _coco_remove_images_without_annotations(dataset, cat_list=None):
@@ -187,6 +254,7 @@ class CocoDetection(torchvision.datasets.CocoDetection):
     def __init__(self, img_folder, ann_file, transforms):
         super().__init__(img_folder, ann_file)
         self._transforms = transforms
+        self.labels_from_zero = sorted(self.coco.cats.keys())[0] == 0
 
     def __getitem__(self, idx):
         img, target = super().__getitem__(idx)
@@ -194,15 +262,16 @@ class CocoDetection(torchvision.datasets.CocoDetection):
         target = dict(image_id=image_id, annotations=target)
         if self._transforms is not None:
             img, target = self._transforms(img, target)
+            if not self.labels_from_zero:
+                target["labels"] -= 1
         return img, target
 
 
 def get_coco(root, image_set, transforms, mode="instances", use_v2=False, with_masks=False):
-    anno_file_template = "{}_{}2017.json"
+    anno_file_template = "{}_{}.json"
     PATHS = {
-        "train": ("train2017", os.path.join("annotations", anno_file_template.format(mode, "train"))),
-        "val": ("val2017", os.path.join("annotations", anno_file_template.format(mode, "val"))),
-        # "train": ("val2017", os.path.join("annotations", anno_file_template.format(mode, "val")))
+        "train": ("images/train", os.path.join("annotations", anno_file_template.format(mode, "train"))),
+        "val": ("images/val", os.path.join("annotations", anno_file_template.format(mode, "val"))),
     }
 
     img_folder, ann_file = PATHS[image_set]
@@ -226,9 +295,8 @@ def get_coco(root, image_set, transforms, mode="instances", use_v2=False, with_m
 
         dataset = CocoDetection(img_folder, ann_file, transforms=transforms)
 
+    num_classes = len(dataset.coco.cats)
     if image_set == "train":
         dataset = _coco_remove_images_without_annotations(dataset)
 
-    # dataset = torch.utils.data.Subset(dataset, [i for i in range(500)])
-
-    return dataset
+    return dataset, num_classes

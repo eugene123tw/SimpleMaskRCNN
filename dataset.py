@@ -72,16 +72,16 @@ class DatumaroDataset(Dataset):
         if img_data is None:
             msg = "Cannot get image data"
             raise RuntimeError(msg)
-        img_data = np.transpose(img_data, (2, 0, 1))
+
         return img_data, img_data.shape[:2]
 
     def _get_item_impl(self, index: int):
         item = self.dm_subset.get(id=self.ids[index], subset=self.dm_subset.name)
         img = item.media_as(Image)
         img_data, img_shape = self._get_img_data_and_shape(img)
+        img_data = np.transpose(img_data, (2, 0, 1))
 
         gt_bboxes, gt_labels, gt_masks = [], [], []
-
         for annotation in item.annotations:
             if isinstance(annotation, Polygon):
                 bbox = np.array(annotation.get_bbox(), dtype=np.float32)
@@ -107,7 +107,6 @@ class DatumaroDataset(Dataset):
         target["boxes"] = tv_tensors.BoundingBoxes(bboxes, format="XYXY", canvas_size=F.get_size(img_data))
         target["masks"] = tv_tensors.Mask(masks)
         target["labels"] = labels
-
         if self.transforms is not None:
             img_data, target = self.transforms(img_data, target)
 

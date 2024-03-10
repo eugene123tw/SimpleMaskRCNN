@@ -8,6 +8,7 @@ import utils
 from engine import train_one_epoch, evaluate
 from datumaro import Dataset as DmDataset
 from dataset import DatumaroDataset
+from coco_utils import get_coco, pre_filtering
 from pathlib import Path
 import time
 import datetime
@@ -26,8 +27,7 @@ def get_transform(train, size_image=(512, 512)):
 
 def get_model_instance_segmentation(num_classes):
     # load an instance segmentation model pre-trained on COCO
-    model = torchvision.models.detection.maskrcnn_resnet50_fpn(weights="DEFAULT")
-
+    model = torchvision.models.detection.maskrcnn_resnet50_fpn(weights=torchvision.models.detection.MaskRCNN_ResNet50_FPN_Weights.DEFAULT)
     # get number of input features for the classifier
     in_features = model.roi_heads.box_predictor.cls_score.in_features
     # replace the pre-trained head with a new one
@@ -35,7 +35,7 @@ def get_model_instance_segmentation(num_classes):
 
     # now get the number of input features for the mask classifier
     in_features_mask = model.roi_heads.mask_predictor.conv5_mask.in_channels
-    hidden_layer = 256
+    hidden_layer = model.roi_heads.mask_predictor.conv5_mask.out_channels
     # and replace the mask predictor with a new one
     model.roi_heads.mask_predictor = MaskRCNNPredictor(
         in_features_mask,
@@ -47,15 +47,15 @@ def get_model_instance_segmentation(num_classes):
 
 def main():
     parser = ArgumentParser()
-    parser.add_argument("--epochs", default=30, type=int, required=False, help="number of total epochs to run")
+    parser.add_argument("--epochs", default=50, type=int, required=False, help="number of total epochs to run")
     parser.add_argument("--data-root", type=str, required=True, help="path to dataset")
     parser.add_argument("--device", default="cuda", type=str, required=False, help="device to use for training")
     parser.add_argument("--print-freq", default=10, type=int, required=False, help="print frequency")
     parser.add_argument('--image-size', nargs='+', type=int, default=[512, 512], required=False, help='input image size')
     parser.add_argument('--batch-size', type=int, default=8, required=False, help='batch size')
     parser.add_argument('--num-workers', type=int, default=4, required=False, help='number of workers')
-    parser.add_argument('--lr', type=float, default=0.001, required=False, help='learning rate')
-    parser.add_argument('--wd', type=float, default=5e-4, required=False, help='weight decay')
+    parser.add_argument('--lr', type=float, default=0.007, required=False, help='learning rate')
+    parser.add_argument('--wd', type=float, default=0.001, required=False, help='weight decay')
     parser.add_argument('--step-lr', type=int, default=-1, required=False, help="step learning rate. If -1 passed "
                                                                                 "the step lr will be difined automatically as the 0.7 of the epochs."
                                                                                 " if passed 0 no step lr will be used")
@@ -83,11 +83,13 @@ def main():
     assert len(image_size) == 2, "image size should be a tuple of length 2"
 
     # use our dataset and defined transformations
-    dataset = DmDataset.import_from(path_to_train_data, format="coco_instances")
+    dataset = DmDataset.import_from(path_to_train_data, format="coco")
+    dataset = pre_filtering(dataset, "coco", 0)
     subsets = dataset.subsets()
     dataset_train = DatumaroDataset(subsets["train"], get_transform(train=True, size_image=image_size))
     dataset_test = DatumaroDataset(subsets["val"], get_transform(train=False, size_image=image_size))
-
+    # dataset_train, num_classes = get_coco(path_to_train_data, image_set="train", transforms=get_transform(train=True, size_image=image_size))
+    # dataset_test, _ = get_coco(path_to_train_data, image_set="val", transforms=get_transform(train=True, size_image=image_size))
     # define training and validation data loaders
     data_loader = torch.utils.data.DataLoader(
         dataset_train,
@@ -107,11 +109,11 @@ def main():
 
     # load a model pre-trained on COCO
     # get the model using our helper function
+    # model = get_model_instance_segmentation(dataset_train.num_classes)
     model = get_model_instance_segmentation(dataset_train.num_classes)
 
     # move model to the right device
     model.to(device)
-
     # construct an optimizer
     params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.SGD(
