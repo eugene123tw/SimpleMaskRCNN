@@ -143,20 +143,17 @@ def main():
         model, optimizer = torch.xpu.optimize(model, optimizer=optimizer, dtype=torch.float32)
 
     if args.profile:
-        activity = ProfilerActivity.CPU
-        if device == "cuda":
-            activity = ProfilerActivity.CUDA
-        elif device == "xpu":
-            activity = ProfilerActivity.XPU
-
         model.eval()
-        with profile(activities=[activity], record_shapes=True) as prof:
-            with record_function("model_inference"):
-                inputs = torch.randn(batch_size, 3, *args.image_size).to(torch.device(device))
-                model(inputs)
+        profiler_kwargs = {}
+        if device == "xpu":
+            profiler_kwargs["use_xpu"] = True
 
-        print(prof.key_averages().table(sort_by=f"{device}_time_total", row_limit=20))
-        model.train()
+        with torch.autograd.profiler_legacy.profile(**profiler_kwargs) as prof:
+            inputs = torch.randn(batch_size, 3, *args.image_size).to(torch.device(device))
+            model(inputs)
+
+        print(prof.key_averages().table())
+
         return
 
     print(f"Starting training for {num_epochs} epochs")
