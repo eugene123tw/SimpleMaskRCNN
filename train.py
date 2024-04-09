@@ -13,6 +13,9 @@ from pathlib import Path
 import time
 import datetime
 
+import torch
+from torch.profiler import profile, record_function, ProfilerActivity
+
 
 def get_transform(train, size_image=(512, 512)):
     transforms = []
@@ -60,6 +63,7 @@ def main():
                                                                                 "the step lr will be difined automatically as the 0.7 of the epochs."
                                                                                 " if passed 0 no step lr will be used")
     parser.add_argument('--warmup', type=bool, default=True, required=False, help='use warmup learning rate scheduler')
+    parser.add_argument('--profile', default=False, action="store_true", help='run in profile mode')
     args = parser.parse_args()
 
     # define arguments
@@ -137,6 +141,23 @@ def main():
     if device == "xpu":
         model.train()
         model, optimizer = torch.xpu.optimize(model, optimizer=optimizer, dtype=torch.float32)
+
+    if args.profile:
+        activity = ProfilerActivity.CPU
+        if device == "cuda":
+            activity = ProfilerActivity.CUDA
+        elif device == "xpu":
+            activity = ProfilerActivity.XPU
+
+        model.eval()
+        with profile(activities=[activity], record_shapes=True) as prof:
+            with record_function("model_inference"):
+                inputs = torch.randn(batch_size, 3, *args.image_size).cuda()
+                model(inputs)
+
+        print(prof.key_averages().table(sort_by=f"{device}_time_total", row_limit=20))
+        model.train()
+        return
 
     print(f"Starting training for {num_epochs} epochs")
     start_time = time.time()
