@@ -152,7 +152,7 @@ def main():
         model.eval()
         with profile(activities=[activity], record_shapes=True) as prof:
             with record_function("model_inference"):
-                inputs = torch.randn(batch_size, 3, *args.image_size).cuda()
+                inputs = torch.randn(batch_size, 3, *args.image_size).to(torch.device(device))
                 model(inputs)
 
         print(prof.key_averages().table(sort_by=f"{device}_time_total", row_limit=20))
